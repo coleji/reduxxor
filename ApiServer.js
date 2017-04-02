@@ -26,7 +26,13 @@ const SECRET = "dfgdfgdfgdfg";
 const COOKIE_LIFE_MS = 1000 * 60 * 60 * 24;
 const SESSION_LIFE_MS = 1000 * 60 * 60 * 1;
 
-var dbPool = createPool();
+var dbPool;
+
+createPool().then(pool => {
+	dbPool = pool;
+}, err => {
+	console.log("Unable to create DB connection pool: " + err);
+});
 
 app.use(bodyParser.json());
 app.use(cookieParser(SECRET));
