@@ -9,7 +9,7 @@ var RedisStore = require('connect-redis')(session);
 
 import config from '../src/config';
 import router from '../src/api/router';
-import { createPool } from '../src/api/mysql';
+import { createPool } from '../src/api/db';
 const app = express();
 
 //const server = new http.Server(app);
