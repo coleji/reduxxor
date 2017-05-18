@@ -163,7 +163,7 @@ if (config.apiPort) {
 var gracefulShutdown = function() {
 	console.log("Received kill signal, shutting down gracefully.");
 	dbPool.close(() => {
-		runnable.close(function() {
+		runnable.close(function() { // eslint-disable-line no-undef
 			console.log("Closed out remaining connections.");
 			process.exit();
 		});

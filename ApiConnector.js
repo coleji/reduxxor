@@ -4,7 +4,7 @@ var makeAPIRequest = function(params) {
 	return new Promise((resolve, reject) => {
 		let options = {
 			hostname: params.host,
-			port: params.port,
+			port: (params.isBehindReverseProxy ? 80 : params.port),
 			path: '/api' + params.apiEndpoint,
 			method: params.httpMethod,
 			headers: { }
@@ -41,8 +41,9 @@ var createActionFromAPIResponse = function(params) {
 			apiEndpoint: params.apiEndpoint,
 			httpMethod: params.httpMethod,
 			postData: params.postData,
-			host : params.config.host,
-			port : params.config.port
+			host : params.config.apiHost || params.config.host,
+			port : params.config.apiPort || params.config.port,
+			isBehindReverseProxy : params.config.isBehindReverseProxy
 		})
 		.then((json) => {
 			let data = json.data;

@@ -12,83 +12,98 @@ import createHistory from 'react-router/lib/createMemoryHistory';
 import {Provider} from 'react-redux';
 import PrettyError from 'pretty-error';
 import http from 'http';
+import fs from 'fs';
+import ini from 'ini';
 
 import getRoutes from '../src/view/routes';
-import config from '../src/config';
+import baseConfig from '../src/config';
 import createStore from './CreateStore';
 import ApiClient from './ApiClient';
 import Html from './Html';
 
-const targetUrl = 'http://' + config.apiHost + ':' + config.apiPort;
+const allServerOptions = ini.parse(fs.readFileSync('./ini/private.ini', 'utf-8'));
+const serverOptions = allServerOptions[(baseConfig.isProduction ? "serverOptionsProduction" : "serverOptionsDevelopment")];
+console.log(serverOptions)
+const config = Object.assign({}, baseConfig, serverOptions);
+
+const targetUrl = 'http://' + config.apiHost + (config.apiPort != 80 ? (':' + config.apiPort) : "");
+console.log("api server is at " + targetUrl);
 const pretty = new PrettyError();
 const app = new Express();
 const server = new http.Server(app);
-const proxy = httpProxy.createProxyServer({
-	target: targetUrl,
-	ws: true
-});
 
-app.use(compression());
+if (!config.apiDirectConnection) {
+	const proxy = httpProxy.createProxyServer({
+		target: targetUrl,
+		ws: true
+	});
 
-app.use(Express.static(path.join(__dirname, '..', 'static')));
+	app.use(compression());
 
-// Proxy to API server
-app.use('/api', (req, res) => {
-	proxy.web(req, res, {target: targetUrl});
-});
+	app.use(Express.static(path.join(__dirname, '..', 'static')));
 
-app.use('/ws', (req, res) => {
-	proxy.web(req, res, {target: targetUrl + '/ws'});
-});
+	console.log("ACTUALLY setting up proxy");
+	// Proxy to API server
+	app.use('/api', (req, res) => {
+		proxy.web(req, res, {target: targetUrl});
+	});
 
-server.on('upgrade', (req, socket, head) => {
-	proxy.ws(req, socket, head);
-});
+	app.use('/ws', (req, res) => {
+		proxy.web(req, res, {target: targetUrl + '/ws'});
+	});
 
-// added the error handling to avoid https://github.com/nodejitsu/node-http-proxy/issues/527
-proxy.on('error', (error, req, res) => {
-	let json;
-	if (error.code !== 'ECONNRESET') {
-		console.error('proxy error', error);
-	}
-	if (!res.headersSent) {
-		res.writeHead(500, {'content-type': 'application/json'});
-	}
+	server.on('upgrade', (req, socket, head) => {
+		proxy.ws(req, socket, head);
+	});
 
-	json = {error: 'proxy_error', reason: error.message};
-	res.end(JSON.stringify(json));
-});
-
-app.use((req, res) => {
-	new Promise((resolve) => {
-		let options = {
-			hostname: 'localhost',
-			port: config.port,
-			path: '/api/isLoggedIn',
-			method: 'GET',
-			headers: { }
-		};
-
-		if (req.headers.cookie) {
-			options.headers.cookie = req.headers.cookie;
+	// added the error handling to avoid https://github.com/nodejitsu/node-http-proxy/issues/527
+	proxy.on('error', (error, req, res) => {
+		let json;
+		if (error.code !== 'ECONNRESET') {
+			console.error('proxy error', error);
+		}
+		if (!res.headersSent) {
+			res.writeHead(500, {'content-type': 'application/json'});
 		}
 
-		let apiReq = http.request(options, (apiRes) => {
-			let resData = '';
-			apiRes.on('data', (chunk) => {
-				resData += chunk;
-			});
-			apiRes.on('end', () => {
-				let response = JSON.parse(resData);
-				console.log("api server returned ", resData);
-				resolve(response.data);
-			});
-		});
-		apiReq.on('error', () => {
-			resolve(null);
-		});
+		json = {error: 'proxy_error', reason: error.message};
+		res.end(JSON.stringify(json));
+	});
+}
 
-		apiReq.end();
+app.use((req, res) => {
+	if (req.hostname == "api.community-boating.org") res.end();
+	new Promise((resolve) => {
+		if (config.requireLogin) {
+			let options = {
+				hostname: 'localhost',
+				port: config.port,
+				path: '/api/isLoggedIn',
+				method: 'GET',
+				headers: { }
+			};
+
+			if (req.headers.cookie) {
+				options.headers.cookie = req.headers.cookie;
+			}
+
+			let apiReq = http.request(options, (apiRes) => {
+				let resData = '';
+				apiRes.on('data', (chunk) => {
+					resData += chunk;
+				});
+				apiRes.on('end', () => {
+					let response = JSON.parse(resData);
+					console.log("api server returned ", resData);
+					resolve(response.data);
+				});
+			});
+			apiReq.on('error', () => {
+				resolve(null);
+			});
+
+			apiReq.end();
+		} else resolve();
 	}).then(userName => {
 		if (__DEVELOPMENT__) {
 			// Do not cache webpack stats: the script file would change since
@@ -98,13 +113,25 @@ app.use((req, res) => {
 		const client = new ApiClient(req);
 		const history = createHistory(req.originalUrl);
 
-		const store = createStore(history, client, {
-			config : {
+		let initialStore = (function() {
+			if (config.requireLogin) {
+				return {auth: {userName}};
+			} else return {};
+		}());
+
+		let apiConfig = (function() {
+			if (config.apiDirectConnection) {
+				return {apiHost: config.apiHost, apiPort : config.apiPort};
+			} else return {};
+		}());
+
+		const store = createStore(history, client, Object.assign({
+			config : Object.assign({
 				host : config.host,
-				port : config.port
-			},
-			auth: {userName}
-		});
+				port : config.port,
+				isBehindReverseProxy : config.isBehindReverseProxy
+			}, apiConfig)
+		}, initialStore));
 
 		function hydrateOnClient() {
 			res.send('<!doctype html>\n' +
@@ -149,6 +176,7 @@ app.use((req, res) => {
 
 if (config.port) {
 	server.listen(config.port, (err) => {
+		console.log("proxy listening to port " + config.port);
 		if (err) {
 			console.error(err);
 		}
